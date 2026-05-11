@@ -1,29 +1,46 @@
 """
 Project Radar — Flask Web Server
-Captures visitor data (Name, IP, User-Agent, Timestamp) and stores it in stalkers.db.
+Captures visitor data (Name, IP, Location, User-Agent, Timestamp) and stores it in stalkers.db.
 """
 
 import sqlite3
 import os
+import requests
+import bleach
 from datetime import datetime, timezone
-from flask import Flask, render_template, request, redirect, url_for, session, render_template_string
+from flask import Flask, render_template, request, redirect, url_for, session
+from dotenv import load_dotenv
+from werkzeug.middleware.proxy_fix import ProxyFix
+
+load_dotenv()
 
 app = Flask(__name__)
 # Add a secret key for session management (needed for admin login)
-# IMPORTANT: Change this value to something random before hosting!
-app.secret_key = "CHANGE_ME_TO_A_RANDOM_SECRET_KEY"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "fallback_secret_key_if_env_missing")
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stalkers.db")
 
+# Apply ProxyFix to correctly handle IPs behind reverse proxies (like ngrok or pythonanywhere)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 def init_db():
     """Initialize the SQLite database and create the table if it doesn't exist."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # Adding location column to existing database might require migration, but for simplicity we recreate if needed or add column
+    try:
+        cursor.execute("SELECT location FROM visitors LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            cursor.execute("ALTER TABLE visitors ADD COLUMN location TEXT DEFAULT 'Unknown'")
+        except sqlite3.OperationalError:
+            pass # Table might not exist yet
+            
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS visitors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             ip_address TEXT NOT NULL,
+            location TEXT DEFAULT 'Unknown',
             user_agent TEXT NOT NULL,
             timestamp TEXT NOT NULL
         )
@@ -52,6 +69,22 @@ def get_setting(key, default=""):
     conn.close()
     return row[0] if row else default
 
+def get_geolocation(ip_address):
+    """Fetch geolocation data for an IP address using ip-api.com."""
+    if ip_address == "127.0.0.1" or ip_address.startswith("192.168."):
+        return "Localhost"
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip_address}?fields=country,city,isp", timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") != "fail":
+                city = data.get("city", "Unknown City")
+                country = data.get("country", "Unknown Country")
+                isp = data.get("isp", "Unknown ISP")
+                return f"{city}, {country} ({isp})"
+    except Exception:
+        pass
+    return "Unknown Location"
 
 @app.before_request
 def ensure_db():
@@ -67,16 +100,20 @@ def index():
 @app.route("/submit", methods=["POST"])
 def submit():
     """Capture visitor data and redirect to the caught page."""
-    name = request.form.get("name", "Unknown")
+    raw_name = request.form.get("name", "Unknown")
+    # Sanitize the input to prevent XSS
+    name = bleach.clean(raw_name)
+    
     ip_address = request.remote_addr
+    location = get_geolocation(ip_address)
     user_agent = request.headers.get("User-Agent", "Unknown")
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO visitors (name, ip_address, user_agent, timestamp) VALUES (?, ?, ?, ?)",
-        (name, ip_address, user_agent, timestamp),
+        "INSERT INTO visitors (name, ip_address, location, user_agent, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (name, ip_address, location, user_agent, timestamp),
     )
     conn.commit()
     conn.close()
@@ -90,15 +127,14 @@ def caught():
     message = get_setting("caught_message", "YOU ARE\nCAUGHT")
     # Convert newlines to <br> for HTML display
     from markupsafe import Markup
-    message_html = Markup(message.replace("\n", "<br>"))
+    message_html = Markup(bleach.clean(message).replace("\n", "<br>"))
     return render_template("caught.html", message=message_html)
 
 
 @app.route("/radar-admin", methods=["GET", "POST"])
 def admin():
     """Secret Admin Dashboard to manage logs and messages from the Cloud."""
-    # IMPORTANT: Change this password before public hosting!
-    ADMIN_PASSWORD = "**********"  # Password to access the dashboard
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "radar_secret_pass")
     
     if request.method == "POST":
         # Check login
@@ -123,70 +159,22 @@ def admin():
             return redirect(url_for("admin"))
 
     if not session.get("admin"):
-        # Login page
-        return render_template_string('''
-            <html><body style="background:#050505; color:cyan; font-family:monospace; text-align:center; padding-top:100px;">
-            <h2>🚨 Restricted Radar Access</h2>
-            <form method="POST">
-                <input type="password" name="password" placeholder="Passcode" style="padding:10px; background:#111; color:cyan; border:1px solid cyan; text-align:center;">
-                <br><br>
-                <button type="submit" style="padding:10px 20px; background:cyan; color:#000; border:none; cursor:pointer;">Enter</button>
-            </form>
-            </body></html>
-        ''')
+        return render_template("admin_login.html")
 
     # Fetch data for dashboard
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT name, ip_address, user_agent, timestamp FROM visitors ORDER BY timestamp DESC")
+    try:
+        cursor.execute("SELECT name, ip_address, location, user_agent, timestamp FROM visitors ORDER BY timestamp DESC")
+    except sqlite3.OperationalError:
+        # Fallback if location column doesn't exist yet for some reason
+        cursor.execute("SELECT name, ip_address, 'Unknown', user_agent, timestamp FROM visitors ORDER BY timestamp DESC")
     logs = cursor.fetchall()
     conn.close()
 
     current_msg = get_setting("caught_message", "YOU ARE\nCAUGHT")
 
-    # Admin Dashboard page
-    return render_template_string('''
-        <html><body style="background:#050505; color:#fff; font-family:monospace; padding:30px; max-width:800px; margin:0 auto;">
-        
-        <h1 style="color:cyan;">🎯 Project Radar | Admin Dashboard</h1>
-        
-        <div style="background:#111; padding:20px; border:1px solid #333; margin-bottom:20px;">
-            <h3 style="color:magenta; margin-top:0;">✏️ 1. Set Caught Message</h3>
-            <form method="POST" style="margin:0;">
-                <textarea name="new_message" rows="3" style="width:100%; background:#050505; color:cyan; border:1px solid #333; padding:10px; font-family:monospace;">{{ current_msg }}</textarea><br>
-                <button type="submit" style="margin-top:10px; padding:8px 15px; background:cyan; color:#000; border:none; font-weight:bold; cursor:pointer;">Update Message</button>
-            </form>
-        </div>
-        
-        <div style="background:#111; padding:20px; border:1px solid #333;">
-            <h3 style="color:magenta; margin-top:0;">📋 2. Trap Logs <span style="color:#666; font-size:14px;">({{ logs|length }} caught)</span></h3>
-            
-            <form method="POST" onsubmit="return confirm('WARNING: Are you sure you want to delete all logs forever?');">
-                <input type="hidden" name="clear" value="1">
-                <button type="submit" style="padding:6px 12px; background:red; color:#fff; border:none; font-weight:bold; cursor:pointer; margin-bottom:15px;">🗑 Clear All Logs</button>
-            </form>
-            
-            <table style="width:100%; border-collapse:collapse; text-align:left;">
-                <tr style="border-bottom:1px solid #333; color:cyan;">
-                    <th style="padding:8px;">Timestamp (UTC)</th>
-                    <th style="padding:8px;">Name</th>
-                    <th style="padding:8px;">IP Address</th>
-                    <th style="padding:8px;">Device/Browser</th>
-                </tr>
-                {% for name, ip, ua, ts in logs %}
-                <tr style="border-bottom:1px solid #222;">
-                    <td style="padding:8px; color:yellow; font-size:12px;">{{ ts }}</td>
-                    <td style="padding:8px; font-weight:bold;">{{ name }}</td>
-                    <td style="padding:8px; color:#0f0; font-size:12px;">{{ ip }}</td>
-                    <td style="padding:8px; color:#aaa; font-size:12px;">{{ ua }}</td>
-                </tr>
-                {% else %}
-                <tr><td colspan="4" style="padding:20px; text-align:center; color:#555;">No stalkers caught yet. Send out your link!</td></tr>
-                {% endfor %}
-            </table>
-        </div>
-        </body></html>
-    ''', current_msg=current_msg, logs=logs)
+    return render_template("admin_dashboard.html", current_msg=current_msg, logs=logs)
 
 
 if __name__ == "__main__":
