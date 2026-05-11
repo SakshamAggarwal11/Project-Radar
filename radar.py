@@ -83,13 +83,14 @@ def show_logs():
     print(f"  {CYAN}{'─' * 66}{RESET}")
 
     # ── Rows ───────────────────────────────────────────────────────
-    for name, ip, ua, ts in rows:
+    for name, ip, loc, ua, ts in rows:
         device = parse_device(ua)
         print(
             f"  {DIM}[{RESET}{YELLOW}{ts}{RESET}{DIM}]{RESET}"
             f"  {CYAN}NAME:{RESET} {BOLD}{name}{RESET}"
             f"  {GREEN}IP:{RESET} {ip}"
-            f"  {MAGENTA}DEVICE:{RESET} {device}"
+            f"  {RED}LOC:{RESET} {loc}"
+            f"  {MAGENTA}DEV:{RESET} {device}"
         )
 
     print(f"  {CYAN}{'─' * 66}{RESET}")
