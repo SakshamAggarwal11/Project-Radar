@@ -34,10 +34,9 @@ stalker/
 
 ## 🚀 The Absolute Beginner's Guide
 
-You have two choices: run it on your own computer (easier but turns off when you close your laptop), or host it on the Cloud for free (runs 24/7 forever).
+You have two choices: run it on your own computer (easier but turns off when you close your laptop), or host it on the Cloud for free (runs 24/7 forever)
 
 ---
-
 ### METHOD A: Run on your Computer (Temporary)
 
 Follow these exact steps to run it locally with ngrok.
@@ -239,7 +238,7 @@ The UI follows a **"Dark Developer"** aesthetic:
 
 ## ⚠️ Disclaimer
 
-This project is built for **educational and personal use only**. Always respect privacy laws and obtain consent before collecting any personal data.
+This project is built only for **educational and personal use only**. Always respect privacy laws and obtain consent before collecting any personal data.
 
 ---
 
