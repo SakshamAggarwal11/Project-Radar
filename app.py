@@ -11,7 +11,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, r
 app = Flask(__name__)
 # Add a secret key for session management (needed for admin login)
 # IMPORTANT: Change this value to something random before hosting!
-app.secret_key = "CHANGE_ME_TO_A_RANDOM_SECRET_KEY"
+app.secret_key = "CHANGE-ME-TO-A-RANDOM-SECRET-KEY"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stalkers.db")
 
 
